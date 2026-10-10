@@ -200,8 +200,10 @@ cargo xtask local serve     # serve the builds and a release feed on http://127.
 ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p artcraft-launcher
 ```
 
-Run `sync` again whenever you want updates: an app is rebuilt when its checkout's version isn't in
-the mirror yet (`--rebuild` forces it), and the launcher's next check picks it up. While
+Run `sync` again whenever you want updates, or let the server do it: `cargo xtask local serve
+--sync-every 1h` pulls and builds on that interval while it serves. An app is rebuilt when its
+checkout's version isn't in the mirror yet (`--rebuild` forces it), and the launcher's next check
+picks it up. While
 `ARTCRAFT_LAUNCHER_DOWNLOAD_BASE` is set (loopback addresses only), the launcher asks only the
 mirror, never GitHub. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
 

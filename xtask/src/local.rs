@@ -55,14 +55,16 @@ commands:
       --rebuild        build even when the version is already mirrored
       --arch <arch>    macOS: universal | aarch64 | x86_64 (default: this Mac's)
       --keep <n>       versions kept per app (default 2)
-  serve [--mirror <dir>] [--port <n>]
-                  serve the mirror and its feed on 127.0.0.1 (default port 8787)
+  serve [--mirror <dir>] [--port <n>] [--sync-every <interval> [sync options]]
+                  serve the mirror and its feed on 127.0.0.1 (default port 8787); with
+                  --sync-every (30m, 1h, 1d…), also run `sync` now and then on that interval
   status [--root <dir>] [--mirror <dir>]
                   each app's checked-out version and commit next to what's mirrored
 
 then: ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run -p artcraft-launcher
 ";
 
+#[derive(Clone)]
 struct Opts {
     root: PathBuf,
     mirror: PathBuf,
@@ -72,6 +74,8 @@ struct Opts {
     arch: Option<String>,
     keep: usize,
     port: u16,
+    /// `serve` also syncs this often (seconds).
+    sync_every: Option<u64>,
     passthrough: Vec<String>,
 }
 
@@ -103,6 +107,7 @@ fn parse(args: &[&str]) -> Result<Opts, String> {
         arch: None,
         keep: 2,
         port: DEFAULT_PORT,
+        sync_every: None,
         passthrough: Vec::new(),
     };
     let mut it = args.iter();
@@ -117,6 +122,7 @@ fn parse(args: &[&str]) -> Result<Opts, String> {
             "--arch" => o.arch = Some(value()?),
             "--keep" => o.keep = value()?.parse().ok().filter(|n| *n >= 1).ok_or("--keep needs a number of at least 1")?,
             "--port" => o.port = value()?.parse().map_err(|_| "--port needs a port number")?,
+            "--sync-every" => o.sync_every = Some(parse_interval(&value()?)?),
             "--" => {
                 o.passthrough = it.by_ref().map(|s| (*s).to_string()).collect();
             }
@@ -183,7 +189,7 @@ fn sync_one(o: &Opts, id: &str, name: &str) -> Result<Outcome, String> {
         let ok = Command::new("git")
             .arg("-C")
             .arg(&repo)
-            .args(["pull", "--ff-only", "--recurse-submodules"])
+            .args(["pull", "--ff-only", "--no-stat", "--recurse-submodules"])
             .status()
             .map_err(|e| format!("couldn't run git ({e})"))?
             .success();
@@ -510,6 +516,20 @@ fn serve(o: &Opts) -> Result<(), String> {
     println!("serving {} at {base}", o.mirror.display());
     println!("feed:    {base}release_info.json");
     println!("launch:  ARTCRAFT_LAUNCHER_DOWNLOAD_BASE={base} cargo run -p artcraft-launcher");
+    if let Some(every) = o.sync_every {
+        // Syncs run one after another on their own thread, so a long build never holds up a
+        // download; a version only joins the feed once its build is complete.
+        let opts = o.clone();
+        std::thread::spawn(move || {
+            loop {
+                if let Err(e) = sync(&opts) {
+                    eprintln!("sync: {e}");
+                }
+                eprintln!("next sync in {}", describe_interval(every));
+                std::thread::sleep(std::time::Duration::from_secs(every));
+            }
+        });
+    }
     for stream in listener.incoming().flatten() {
         let (mirror, base) = (o.mirror.clone(), base.clone());
         std::thread::spawn(move || {
@@ -584,6 +604,31 @@ fn handle(stream: TcpStream, mirror: &Path, base: &str) -> Result<(), String> {
     std::io::copy(&mut file.take(size - start), &mut out).map(|_| ()).map_err(io)
 }
 
+/// `90s`, `30m`, `1h`, `1d` (or plain seconds); at least a minute.
+fn parse_interval(text: &str) -> Result<u64, String> {
+    let text = text.trim();
+    let split = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
+    let n: u64 = number.parse().map_err(|_| format!("`{text}` isn't an interval (try 30m, 1h or 1d)"))?;
+    let unit = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err(format!("`{text}` isn't an interval (try 30m, 1h or 1d)")),
+    };
+    n.checked_mul(unit).filter(|s| *s >= 60).ok_or_else(|| format!("--sync-every {text}: use at least a minute"))
+}
+
+fn describe_interval(secs: u64) -> String {
+    match secs {
+        s if s % 86_400 == 0 => format!("{}d", s / 86_400),
+        s if s % 3600 == 0 => format!("{}h", s / 3600),
+        s if s % 60 == 0 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
 fn respond(out: &mut TcpStream, status: &str, kind: &str, body: &[u8], head: bool) -> Result<(), String> {
     let header = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -631,6 +676,18 @@ mod tests {
         assert!(json.contains(r#""size_bytes":3"#) && json.contains(&"ab".repeat(32)));
         assert!(json.contains(r#"Built \"locally\".\n"#));
         assert!(!json.contains("0.7.0"));
+    }
+
+    #[test]
+    fn intervals() {
+        assert_eq!(parse_interval("30m"), Ok(1800));
+        assert_eq!(parse_interval("1h"), Ok(3600));
+        assert_eq!(parse_interval("2d"), Ok(172_800));
+        assert_eq!(parse_interval("120"), Ok(120));
+        for bad in ["", "h", "10s", "1w", "-1h", "99999999999999999999d"] {
+            assert!(parse_interval(bad).is_err(), "{bad}");
+        }
+        assert_eq!(describe_interval(5400), "90m");
     }
 
     #[test]
