@@ -189,6 +189,22 @@ rustup target add wasm32-unknown-unknown
 cd apps/artcraft-launcher-web && trunk serve
 ```
 
+### Installing your own builds
+
+To install and update the Craft apps from checkouts on your machine instead of GitHub, clone them
+next to this repo (`../photocraft`, `../wordcraft`, …) and run:
+
+```sh
+cargo xtask local sync      # git pull every app, build and package each new version into ../local-mirror
+cargo xtask local serve     # serve the builds and a release feed on http://127.0.0.1:8787/
+ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p artcraft-launcher
+```
+
+Run `sync` again whenever you want updates: an app is rebuilt when its checkout's version isn't in
+the mirror yet (`--rebuild` forces it), and the launcher's next check picks it up. While
+`ARTCRAFT_LAUNCHER_DOWNLOAD_BASE` is set (loopback addresses only), the launcher asks only the
+mirror, never GitHub. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
+
 New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md). Release packaging lives in
 [`packaging/`](packaging/) and [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
