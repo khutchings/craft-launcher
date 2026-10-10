@@ -53,6 +53,8 @@ commands:
       --only <a,b>     just these apps
       --no-pull        don't pull; build what's checked out
       --rebuild        build even when the version is already mirrored
+      --every-commit   build each new commit, as <next patch>-dev.<commit time> (0.4.0 builds
+                       as 0.4.1-dev.20261010183500), so the launcher offers it as an update
       --arch <arch>    macOS: universal | aarch64 | x86_64 (default: this Mac's)
       --keep <n>       versions kept per app (default 2)
   serve [--mirror <dir>] [--port <n>] [--sync-every <interval> [sync options]]
@@ -71,6 +73,7 @@ struct Opts {
     only: Option<Vec<String>>,
     pull: bool,
     rebuild: bool,
+    every_commit: bool,
     arch: Option<String>,
     keep: usize,
     port: u16,
@@ -104,6 +107,7 @@ fn parse(args: &[&str]) -> Result<Opts, String> {
         only: None,
         pull: true,
         rebuild: false,
+        every_commit: false,
         arch: None,
         keep: 2,
         port: DEFAULT_PORT,
@@ -119,6 +123,7 @@ fn parse(args: &[&str]) -> Result<Opts, String> {
             "--only" => o.only = Some(value()?.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()),
             "--no-pull" => o.pull = false,
             "--rebuild" => o.rebuild = true,
+            "--every-commit" => o.every_commit = true,
             "--arch" => o.arch = Some(value()?),
             "--keep" => o.keep = value()?.parse().ok().filter(|n| *n >= 1).ok_or("--keep needs a number of at least 1")?,
             "--port" => o.port = value()?.parse().map_err(|_| "--port needs a port number")?,
@@ -197,16 +202,32 @@ fn sync_one(o: &Opts, id: &str, name: &str) -> Result<Outcome, String> {
             pull_note = " (pull failed; built the checkout as it is)".into();
         }
     }
-    let version = checkout_version(&repo)?;
+    let checkout = checkout_version(&repo)?;
     let commit = git(&repo, &["rev-parse", "--short=12", "HEAD"])?;
     let app_dir = o.mirror.join(id);
+    let version = if o.every_commit {
+        // The newest mirrored build is already this commit: nothing to do.
+        if !o.rebuild
+            && let Some(latest) = latest_version(&app_dir)
+            && std::fs::read_to_string(app_dir.join(&latest).join(COMMIT)).is_ok_and(|c| c.trim() == commit)
+        {
+            return Ok(Outcome::UpToDate(format!("{latest} is {commit}{pull_note}")));
+        }
+        let committed = git(&repo, &["show", "-s", "--format=%ct", "HEAD"])?.parse::<i64>().map_err(|_| "unreadable commit time")?;
+        dev_version(&checkout, committed)?
+    } else {
+        checkout
+    };
     let dest = app_dir.join(&version);
     if !o.rebuild && dest.join(COMPLETE).is_file() {
         let built_from = std::fs::read_to_string(dest.join(COMMIT)).unwrap_or_default();
         let note = if built_from.trim() == commit {
             String::new()
         } else {
-            format!("; {commit} is newer than the mirrored {} but has the same version (--rebuild to replace it)", built_from.trim())
+            format!(
+                "; {commit} is newer than the mirrored {} but has the same version (--every-commit builds each commit, --rebuild replaces this one)",
+                built_from.trim()
+            )
         };
         return Ok(Outcome::UpToDate(format!("{version} already mirrored{note}{pull_note}")));
     }
@@ -217,6 +238,11 @@ fn sync_one(o: &Opts, id: &str, name: &str) -> Result<Outcome, String> {
     std::fs::create_dir_all(&building).map_err(|e| format!("couldn't create {} ({e})", building.display()))?;
     let mut cmd = package_command(&repo, o)?;
     cmd.current_dir(&repo).env("DIST", &building);
+    if o.every_commit {
+        // Every app's packaging reads <APP>_VERSION in place of its Cargo.toml version, and keeps
+        // the full version (with the -dev suffix) in the installed copy, where the launcher reads it.
+        cmd.env(format!("{}_VERSION", id.to_ascii_uppercase()), &version);
+    }
     eprintln!("$ {name}: packaging {version} ({commit})");
     let status = cmd.status().map_err(|e| format!("couldn't run the packaging script ({e})"))?;
     if !status.success() {
@@ -495,6 +521,18 @@ fn parse_version(v: &str) -> Option<([u64; 3], Option<String>)> {
     parts.next().is_none().then_some((n, pre))
 }
 
+/// The version a build of an unreleased commit gets: after `checkout` and before whatever is
+/// released next, ordered by commit time. `0.4.0` → `0.4.1-dev.20261010183500`;
+/// `1.0.0-rc.1` → `1.0.0-rc.1.dev.20261010183500`.
+fn dev_version(checkout: &str, committed: i64) -> Result<String, String> {
+    let ([major, minor, patch], pre) = parse_version(checkout).ok_or_else(|| format!("can't read version `{checkout}`"))?;
+    let stamp: String = rfc3339(committed).chars().filter(char::is_ascii_digit).collect();
+    Ok(match pre {
+        None => format!("{major}.{minor}.{}-dev.{stamp}", patch.checked_add(1).ok_or("version too large")?),
+        Some(pre) => format!("{major}.{minor}.{patch}-{pre}.dev.{stamp}"),
+    })
+}
+
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (parse_version(a), parse_version(b)) {
@@ -676,6 +714,18 @@ mod tests {
         assert!(json.contains(r#""size_bytes":3"#) && json.contains(&"ab".repeat(32)));
         assert!(json.contains(r#"Built \"locally\".\n"#));
         assert!(!json.contains("0.7.0"));
+    }
+
+    #[test]
+    fn dev_versions_sit_between_releases_and_follow_commit_time() {
+        const T: i64 = 1_791_500_000; // 2026-10-08T22:53:20Z
+        assert_eq!(dev_version("0.4.0", T).as_deref(), Ok("0.4.1-dev.20261008225320"));
+        assert_eq!(dev_version("1.0.0-rc.1", T).as_deref(), Ok("1.0.0-rc.1.dev.20261008225320"));
+        let (dev, later) = (dev_version("0.4.0", T).unwrap(), dev_version("0.4.0", T + 60).unwrap());
+        assert_eq!(compare_versions(&dev, "0.4.0"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions(&later, &dev), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions("0.4.1", &later), std::cmp::Ordering::Greater);
+        assert!(dev_version("main", T).is_err());
     }
 
     #[test]

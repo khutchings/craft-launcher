@@ -203,7 +203,8 @@ ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p ar
 Run `sync` again whenever you want updates, or let the server do it: `cargo xtask local serve
 --sync-every 1h` pulls and builds on that interval while it serves. An app is rebuilt when its
 checkout's version isn't in the mirror yet (`--rebuild` forces it), and the launcher's next check
-picks it up. While
+picks it up. Add `--every-commit` to build every new commit instead, as a dev version between
+releases (`0.4.0` builds as `0.4.1-dev.<commit time>`), which the launcher offers as an update. While
 `ARTCRAFT_LAUNCHER_DOWNLOAD_BASE` is set (loopback addresses only), the launcher asks only the
 mirror, never GitHub. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
 
