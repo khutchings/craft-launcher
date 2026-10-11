@@ -63,7 +63,7 @@ commands:
   status [--root <dir>] [--mirror <dir>]
                   each app's checked-out version and commit next to what's mirrored
 
-then: ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run -p artcraft-launcher
+then: ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run -p artcraft-launcher --features local-mirror
 ";
 
 #[derive(Clone)]
@@ -553,7 +553,7 @@ fn serve(o: &Opts) -> Result<(), String> {
     let base = format!("http://127.0.0.1:{}/", o.port);
     println!("serving {} at {base}", o.mirror.display());
     println!("feed:    {base}release_info.json");
-    println!("launch:  ARTCRAFT_LAUNCHER_DOWNLOAD_BASE={base} cargo run -p artcraft-launcher");
+    println!("launch:  ARTCRAFT_LAUNCHER_DOWNLOAD_BASE={base} cargo run -p artcraft-launcher --features local-mirror");
     if let Some(every) = o.sync_every {
         // Syncs run one after another on their own thread, so a long build never holds up a
         // download; a version only joins the feed once its build is complete.

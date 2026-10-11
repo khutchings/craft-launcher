@@ -197,7 +197,7 @@ next to this repo (`../photocraft`, `../wordcraft`, …) and run:
 ```sh
 cargo xtask local sync      # git pull every app, build and package each new version into ../local-mirror
 cargo xtask local serve     # serve the builds and a release feed on http://127.0.0.1:8787/
-ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p artcraft-launcher
+ARTCRAFT_LAUNCHER_DOWNLOAD_BASE=http://127.0.0.1:8787/ cargo run --release -p artcraft-launcher --features local-mirror
 ```
 
 Run `sync` again whenever you want updates, or let the server do it: `cargo xtask local serve
@@ -206,7 +206,7 @@ checkout's version isn't in the mirror yet (`--rebuild` forces it), and the laun
 picks it up. Add `--every-commit` to build every new commit instead, as a dev version between
 releases (`0.4.0` builds as `0.4.1-dev.<commit time>`), which the launcher offers as an update. While
 `ARTCRAFT_LAUNCHER_DOWNLOAD_BASE` is set (loopback addresses only), the launcher asks only the
-mirror, never GitHub. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
+mirror, never GitHub. Only builds with the `local-mirror` feature read it; releases never have it. `cargo xtask local help` lists the options (`--only`, `--no-pull`, `--arch`, …).
 
 New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md). Release packaging lives in
 [`packaging/`](packaging/) and [`.github/workflows/release.yml`](.github/workflows/release.yml).

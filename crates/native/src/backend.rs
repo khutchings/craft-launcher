@@ -783,15 +783,24 @@ fn feed_url() -> String {
         .unwrap_or_else(|| artcraft_launcher_core::feed::FEED_URL.to_string())
 }
 
+/// `http://<loopback host>:<port>` and an optional path: the host must be exactly 127.0.0.1,
+/// localhost or [::1] (no `user@` in front of another host), with a numeric port.
 fn is_loopback(url: &str) -> bool {
-    ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"].iter().any(|p| url.starts_with(p))
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let Some((host, port)) = authority.rsplit_once(':') else { return false };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]") && !port.is_empty() && port.parse::<u16>().is_ok()
 }
 
 /// `ARTCRAFT_LAUNCHER_DOWNLOAD_BASE`: a mirror on this machine (`cargo xtask local serve`) that
 /// serves `release_info.json` and the builds it lists. While it's set, releases come only from
 /// there (never GitHub or ArtCraft's API), and its download links are trusted. Loopback only, so
-/// nothing but the developer's own builds can be installed this way.
+/// nothing but the developer's own builds can be installed this way, and only in builds with the
+/// `local-mirror` feature: release builds ignore the variable.
 fn local_mirror() -> Option<String> {
+    if !cfg!(feature = "local-mirror") {
+        return None;
+    }
     let base = std::env::var("ARTCRAFT_LAUNCHER_DOWNLOAD_BASE").ok()?;
     let base = base.trim();
     if !is_loopback(base) || base.contains(['?', '#', '\\']) {
@@ -1125,6 +1134,9 @@ mod tests {
         assert!(matches!(mirror_latest(photo, None, NOW).0, Some(LatestRelease::Failed(_))));
         assert!(is_loopback("http://localhost:8787/") && is_loopback("http://[::1]:8787/"));
         assert!(!is_loopback("http://192.168.1.2:8787/") && !is_loopback("http://localhost.evil.example/"));
+        assert!(!is_loopback("http://127.0.0.1:1@evil.example/") && !is_loopback("http://127.0.0.1:8787@evil.example:80/"));
+        assert!(!is_loopback("http://127.0.0.1/") && !is_loopback("http://127.0.0.1:x/") && !is_loopback("https://127.0.0.1:8787/"));
+        assert!(is_loopback("http://127.0.0.1:8787") && is_loopback("http://127.0.0.1:8787/release_info.json"));
     }
 
     #[test]
